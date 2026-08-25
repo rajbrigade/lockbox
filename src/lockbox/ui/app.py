@@ -11,6 +11,7 @@ second and does nothing but compare two numbers.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 import tkinter as tk
@@ -67,6 +68,7 @@ class LockboxApp(tk.Tk):
         self._progress_step = 0
         self._search_job = None
         self._strength_job = None
+        self._palette = None
 
         self.unlock_frame = self._build_unlock()
         self.main_frame = self._build_main()
@@ -486,19 +488,60 @@ class LockboxApp(tk.Tk):
 
     # ----------------------------------------------------------- bindings --
     def _bind_keys(self) -> None:
+        """Wire the global accelerators.
+
+        Two things this has to get right:
+
+        1. `<Command-...>` is a macOS sequence. Everywhere else Tk resolves
+           "Command" to Mod1, which on X11 and Windows is **Alt** -- so binding
+           it unconditionally made Alt+K (and any key the window manager routes
+           through Alt) open the command palette out of nowhere. It is only
+           bound on Darwin now.
+        2. Every accelerator below is also a default Emacs-style binding in
+           Tk's own Entry and Text widgets: Ctrl+K kills to end of line, Ctrl+F
+           and Ctrl+B move the cursor, Ctrl+N goes to the next line, Ctrl+T
+           transposes. Without "break" the class binding still runs, so
+           Ctrl+K in the notes box opened the palette *and* silently deleted
+           the rest of the line.
+        """
         binds = {
-            "<Control-k>": lambda _e: self.show_palette(),
-            "<Command-k>": lambda _e: self.show_palette(),
-            "<Control-l>": lambda _e: self.lock(),
-            "<Control-f>": lambda _e: self.search_entry.focus_set(),
-            "<Control-n>": lambda _e: self.new_item(),
-            "<Control-s>": lambda _e: self.save_item(),
-            "<Control-Shift-C>": lambda _e: self.copy_password(),
-            "<Control-b>": lambda _e: self.make_backup(),
-            "<Control-t>": lambda _e: self.show_tools(),
+            "<Control-k>": self.show_palette,
+            "<Control-l>": self.lock,
+            "<Control-f>": lambda: self.search_entry.focus_set(),
+            "<Control-n>": self.new_item,
+            "<Control-s>": self.save_item,
+            "<Control-Shift-C>": self.copy_password,
+            "<Control-b>": self.make_backup,
+            "<Control-t>": self.show_tools,
         }
-        for sequence, handler in binds.items():
+        if sys.platform == "darwin":
+            binds.update({
+                "<Command-k>": self.show_palette,
+                "<Command-l>": self.lock,
+                "<Command-f>": lambda: self.search_entry.focus_set(),
+                "<Command-n>": self.new_item,
+                "<Command-s>": self.save_item,
+                "<Command-b>": self.make_backup,
+                "<Command-t>": self.show_tools,
+            })
+
+        def accelerator(action):
+            def handler(_event=None):
+                action()
+                return "break"
+            return handler
+
+        # bind_all installs into the "all" bindtag, which Tk evaluates *after*
+        # the widget and class tags -- so returning "break" there is too late to
+        # stop the class binding that already ran. Overriding the sequence on
+        # the text-editing classes as well replaces the built-in Emacs binding
+        # outright, which is what actually keeps Ctrl+K from eating the line.
+        editing_classes = ("Text", "Entry", "TEntry", "TCombobox", "Spinbox")
+        for sequence, action in binds.items():
+            handler = accelerator(action)
             self.bind_all(sequence, handler)
+            for widget_class in editing_classes:
+                self.bind_class(widget_class, sequence, handler)
         # Escape clears the search box only while the search box has focus,
         # rather than globally stealing the key from every other widget.
         self.search_entry.bind("<Escape>", lambda _e: self.query.set(""))
@@ -1052,7 +1095,11 @@ class LockboxApp(tk.Tk):
                     lambda: self.clipboard_helper.clear()),
             Command("lock", "Lock vault", "Ctrl+L", self.lock),
         ]
-        CommandPalette(self, commands)
+        # The palette takes a grab; opening a second one over the first leaves
+        # an unreachable window holding it.
+        if self._palette is not None and self._palette.winfo_exists():
+            self._palette.destroy()
+        self._palette = CommandPalette(self, commands)
 
     def _new_typed(self, item_type: str) -> None:
         self.new_item()
