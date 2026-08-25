@@ -23,11 +23,12 @@ from ..core import breach as breach_mod
 from ..core import portio
 from ..core.audit import audit as run_audit
 from ..core.clipboard import Clipboard, ClipboardUnavailable
+from ..core.crypto import wipe
 from ..core.errors import DecryptError, LockboxError, VaultFormatError
 from ..core.model import ITEM_TYPES, TYPE_LABELS, Item
 from ..core.search import search as vault_search
 from ..core.vault import Vault, default_vault_path
-from ..tools.otp import OTPConfig, current as totp_current, parse_otpauth
+from ..tools.otp import current as totp_current, parse_otpauth
 from . import theme
 from .palette import Command, CommandPalette
 from .tools_view import ToolsWindow
@@ -48,8 +49,8 @@ class LockboxApp(tk.Tk):
     def __init__(self, vault_path: Optional[str] = None):
         super().__init__()
         self.title(f"Lockbox {__version__}")
-        self.geometry("1080x680")
-        self.minsize(880, 560)
+        self.geometry("1240x780")
+        self.minsize(1000, 620)
         theme.apply_styles(self)
         self.fonts = theme.fonts()
 
@@ -76,32 +77,62 @@ class LockboxApp(tk.Tk):
 
     # ------------------------------------------------------------- unlock --
     def _build_unlock(self) -> ttk.Frame:
-        frame = ttk.Frame(self, padding=40)
+        frame = ttk.Frame(self, padding=theme.PAD_XL)
         inner = ttk.Frame(frame)
-        inner.place(relx=0.5, rely=0.4, anchor="center")
+        inner.place(relx=0.5, rely=0.42, anchor="center")
 
-        ttk.Label(inner, text="Lockbox", style="Title.TLabel").pack()
-        ttk.Label(inner, text="Offline password manager. No network, ever.",
-                  style="Dim.TLabel").pack(pady=(2, 16))
+        brand = ttk.Frame(inner)
+        brand.pack(anchor="w")
+        ttk.Label(brand, text="\u258c", foreground=theme.ACCENT_BRIGHT,
+                  font=self.fonts["brand"]).pack(side="left")
+        ttk.Label(brand, text="LOCKBOX", font=self.fonts["brand"]).pack(side="left")
+        ttk.Label(brand, text=f"v{__version__}", style="Faint.TLabel").pack(
+            side="left", padx=(theme.PAD_SM, 0), pady=(6, 0))
+        ttk.Label(inner, text="offline password manager \u2014 no network, ever",
+                  style="Faint.TLabel").pack(anchor="w", pady=(theme.PAD_XS, theme.PAD_LG))
 
+        self._rule(inner, pady=(0, theme.PAD_LG))
+
+        ttk.Label(inner, text=theme.caption("vault"), style="Caption.TLabel").pack(anchor="w")
         self.path_var = tk.StringVar(value=self.vault.path)
         path_row = ttk.Frame(inner)
-        path_row.pack(fill="x")
-        ttk.Entry(path_row, textvariable=self.path_var, width=46).pack(side="left")
-        ttk.Button(path_row, text="...", width=3, command=self._choose_vault).pack(
-            side="left", padx=(4, 0))
+        path_row.pack(fill="x", pady=(theme.PAD_XS, theme.PAD_MD))
+        ttk.Entry(path_row, textvariable=self.path_var, width=52).pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(path_row, text="\u2026", width=3, command=self._choose_vault).pack(
+            side="left", padx=(theme.PAD_SM, 0))
 
+        ttk.Label(inner, text=theme.caption("master password"),
+                  style="Caption.TLabel").pack(anchor="w")
+        entry_row = ttk.Frame(inner)
+        entry_row.pack(fill="x", pady=(theme.PAD_XS, theme.PAD_MD))
+        ttk.Label(entry_row, text="\u203a", foreground=theme.ACCENT_BRIGHT,
+                  font=self.fonts["mono_big"]).pack(side="left", padx=(0, theme.PAD_SM))
         self.password_var = tk.StringVar()
-        self.password_entry = ttk.Entry(inner, textvariable=self.password_var, show="\u2022",
-                                        width=52)
-        self.password_entry.pack(pady=theme.PAD)
+        self.password_entry = ttk.Entry(entry_row, textvariable=self.password_var,
+                                        show="\u2022", width=48)
+        self.password_entry.pack(side="left", fill="x", expand=True)
         self.password_entry.bind("<Return>", lambda _e: self._unlock())
 
-        self.unlock_button = ttk.Button(inner, text="Unlock", command=self._unlock)
+        self.unlock_button = ttk.Button(inner, text="Unlock", style="Primary.TButton",
+                                        command=self._unlock)
         self.unlock_button.pack(fill="x")
-        self.unlock_message = ttk.Label(inner, text="", style="Dim.TLabel", wraplength=380)
-        self.unlock_message.pack(pady=(theme.PAD, 0))
+        self.unlock_message = ttk.Label(inner, text="", style="Faint.TLabel", wraplength=460)
+        self.unlock_message.pack(anchor="w", pady=(theme.PAD_MD, 0))
         return frame
+
+    # ------------------------------------------------------------- chrome --
+    @staticmethod
+    def _rule(parent, pady=0, padx=0, style: str = "Rule.TFrame"):
+        """A 1px horizontal hairline.
+
+        Regions are separated by rules rather than by nested panels each with
+        their own background: stacking slightly different greys is what made
+        the detail pane read as a wall of boxes.
+        """
+        line = ttk.Frame(parent, height=1, style=style)
+        line.pack(fill="x", pady=pady, padx=padx)
+        return line
 
     def _choose_vault(self) -> None:
         path = filedialog.askopenfilename(title="Open vault",
@@ -134,7 +165,7 @@ class LockboxApp(tk.Tk):
         """
         if self._unlocking:
             return
-        password = self.password_var.get().encode("utf-8")
+        password = bytearray(self.password_var.get().encode("utf-8"))
         if not password:
             self.unlock_message.configure(text="Enter a master password.")
             return
@@ -162,8 +193,12 @@ class LockboxApp(tk.Tk):
                 self._unlock_result = ("error", "Wrong password, or the vault was modified.")
             except (VaultFormatError, LockboxError, OSError, ValueError) as exc:
                 self._unlock_result = ("error", str(exc))
+            except BaseException as exc:  # never leave the poller waiting forever
+                self._unlock_result = ("error", f"{type(exc).__name__}: {exc}")
             finally:
-                del password
+                wipe(password)
+                if self._unlock_result is None:
+                    self._unlock_result = ("error", "Unlock failed for an unknown reason.")
 
         threading.Thread(target=work, daemon=True, name="lockbox-kdf").start()
         self.after(50, self._poll_unlock)
@@ -173,8 +208,10 @@ class LockboxApp(tk.Tk):
         if not self._unlocking:
             return
         self._progress_step = (self._progress_step + 1) % 4
-        dots = "." * self._progress_step
-        self.unlock_message.configure(text=f"Deriving key (deliberately slow){dots}")
+        bar = "\u2588" * (self._progress_step + 1) + "\u2591" * (3 - self._progress_step)
+        self.unlock_message.configure(
+            text=f"deriving key  [{bar}]  argon2id is slow on purpose"
+        )
         self.after(300, self._animate_unlock)
 
     def _poll_unlock(self) -> None:
@@ -206,60 +243,134 @@ class LockboxApp(tk.Tk):
     def _build_main(self) -> ttk.Frame:
         frame = ttk.Frame(self)
 
-        sidebar = ttk.Frame(frame, style="Alt.TFrame", padding=theme.PAD)
+        # ---- sidebar ------------------------------------------------------
+        sidebar = ttk.Frame(frame, style="Alt.TFrame", width=210)
         sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        brand = ttk.Frame(sidebar, style="Alt.TFrame", padding=(theme.PAD_MD, theme.PAD_MD,
+                                                               theme.PAD_MD, theme.PAD_SM))
+        brand.pack(fill="x")
+        ttk.Label(brand, text="\u258c", style="Brand.TLabel").pack(side="left")
+        ttk.Label(brand, text="LOCKBOX", style="Brand.TLabel",
+                  foreground=theme.FG).pack(side="left")
+        self._rule(sidebar)
+
+        caption_row = ttk.Frame(sidebar, style="Alt.TFrame",
+                                padding=(theme.PAD_MD, theme.PAD_MD, theme.PAD_MD, theme.PAD_XS))
+        caption_row.pack(fill="x")
+        ttk.Label(caption_row, text=theme.caption("categories"),
+                  style="CaptionAlt.TLabel").pack(side="left")
+
+        # Listbox rows stay 1:1 with CATEGORIES -- refresh_list() maps the
+        # selected index straight back into that tuple, so no header or spacer
+        # row may ever be inserted here.
         self.sidebar_list = tk.Listbox(
-            sidebar, width=18, height=16, activestyle="none", borderwidth=0,
-            background=theme.BG_ALT, foreground=theme.FG,
-            selectbackground=theme.ACCENT, selectforeground="#ffffff", font=self.fonts["base"],
+            sidebar, height=len(CATEGORIES), activestyle="none", borderwidth=0,
+            highlightthickness=0, background=theme.BG_ALT, foreground=theme.FG_DIM,
+            selectbackground=theme.ACCENT_MUTED, selectforeground=theme.ACCENT_BRIGHT,
+            font=self.fonts["mono"],
         )
         for _key, label, _q in CATEGORIES:
-            self.sidebar_list.insert(tk.END, f" {label}")
+            self.sidebar_list.insert(tk.END, f"  {label}")
         self.sidebar_list.selection_set(0)
-        self.sidebar_list.pack(fill="y")
+        self.sidebar_list.pack(fill="x", padx=theme.PAD_SM)
         self.sidebar_list.bind("<<ListboxSelect>>", self._category_changed)
 
-        for label, command in (
-            ("Security Audit", self.show_audit),
-            ("Micro Tools", self.show_tools),
-            ("Settings", self.show_settings),
-            ("Lock  (Ctrl+L)", self.lock),
-        ):
-            ttk.Button(sidebar, text=label, command=command).pack(fill="x", pady=(theme.PAD, 0))
+        spacer = ttk.Frame(sidebar, style="Alt.TFrame")
+        spacer.pack(fill="both", expand=True)
 
-        middle = ttk.Frame(frame, padding=theme.PAD)
+        self._rule(sidebar)
+        actions = ttk.Frame(sidebar, style="Alt.TFrame", padding=(theme.PAD_SM, theme.PAD_SM))
+        actions.pack(fill="x")
+        for label, hint, command in (
+            ("Security audit", "", self.show_audit),
+            ("Micro tools", "^T", self.show_tools),
+            ("Settings", "", self.show_settings),
+            ("Backup now", "^B", self.make_backup),
+            ("Lock vault", "^L", self.lock),
+        ):
+            text = f"{label:<15}{hint}" if hint else label
+            ttk.Button(actions, text=text, style="Ghost.TButton",
+                       command=command).pack(fill="x")
+
+        # ---- item list ----------------------------------------------------
+        middle = ttk.Frame(frame, padding=(theme.PAD_MD, theme.PAD_MD, theme.PAD_MD, 0))
         middle.pack(side="left", fill="both", expand=True)
+
         search_row = ttk.Frame(middle)
         search_row.pack(fill="x")
-        self.search_entry = ttk.Entry(search_row, textvariable=self.query)
+        ttk.Label(search_row, text="\u2315", foreground=theme.FG_FAINT,
+                  font=self.fonts["mono"]).pack(side="left", padx=(0, theme.PAD_SM))
+        self.search_entry = ttk.Entry(search_row, textvariable=self.query,
+                                      style="Search.TEntry")
         self.search_entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(search_row, text="+ New", command=self.new_item).pack(side="left",
-                                                                        padx=(theme.PAD, 0))
+        ttk.Button(search_row, text="+ New", style="Primary.TButton",
+                   command=self.new_item).pack(side="left", padx=(theme.PAD_SM, 0))
         # Debounced: rebuilding the list on every keystroke makes typing feel
         # sticky once the vault is more than a few dozen items.
         self.query.trace_add("write", lambda *_: self._debounce_search())
 
-        columns = ("title", "username", "type")
-        self.tree = ttk.Treeview(middle, columns=columns, show="headings", selectmode="browse")
-        for column, heading, width in (("title", "Title", 220), ("username", "Username", 180),
-                                       ("type", "Type", 90)):
-            self.tree.heading(column, text=heading)
-            self.tree.column(column, width=width, stretch=(column == "title"))
-        self.tree.pack(fill="both", expand=True, pady=(theme.PAD, 0))
+        meta_row = ttk.Frame(middle)
+        meta_row.pack(fill="x", pady=(theme.PAD_MD, theme.PAD_XS))
+        self.list_caption = tk.StringVar(value=theme.caption("items"))
+        ttk.Label(meta_row, textvariable=self.list_caption, style="Caption.TLabel").pack(
+            side="left")
+        ttk.Label(meta_row, text="type:  user:  tag:  fav:true  has:totp",
+                  style="Faint.TLabel").pack(side="right")
+
+        list_wrap = ttk.Frame(middle)
+        list_wrap.pack(fill="both", expand=True)
+        columns = ("flag", "title", "username", "type")
+        self.tree = ttk.Treeview(list_wrap, columns=columns, show="headings",
+                                 selectmode="browse")
+        for column, heading, width, anchor in (
+            ("flag", "", 26, "center"),
+            ("title", theme.caption("title"), 240, "w"),
+            ("username", theme.caption("username"), 190, "w"),
+            ("type", theme.caption("type"), 100, "w"),
+        ):
+            self.tree.heading(column, text=heading, anchor=anchor)
+            self.tree.column(column, width=width, anchor=anchor,
+                             stretch=(column == "title"))
+        scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        # Zebra striping: a flat list of identical rows is hard to track across
+        # at this row height, and Tk gives no alternating background for free.
+        self.tree.tag_configure("odd", background=theme.BG_ALT)
+        self.tree.tag_configure("even", background=theme.BG)
+        self.tree.tag_configure("fav", foreground=theme.ACCENT_BRIGHT)
         self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
         self.tree.bind("<Delete>", lambda _e: self.delete_item())
 
-        detail = ttk.Frame(frame, padding=theme.PAD, width=380)
+        # Placed (not packed) inside the list area: an empty-state line packed
+        # after an expanding Treeview lands at the bottom of the pane, nowhere
+        # near the rows it is talking about.
+        self.empty_label = ttk.Label(list_wrap, text="", style="Faint.TLabel",
+                                     background=theme.BG)
+
+        # ---- detail -------------------------------------------------------
+        divider = ttk.Frame(frame, width=1, style="Rule.TFrame")
+        divider.pack(side="left", fill="y")
+        detail = ttk.Frame(frame, padding=(theme.PAD_LG, theme.PAD_MD), width=420)
         detail.pack(side="left", fill="both")
         detail.pack_propagate(False)
         self.detail = detail
         self._build_detail(detail)
 
-        status_bar = ttk.Frame(self)
-        ttk.Label(status_bar, textvariable=self.status, style="Dim.TLabel").pack(side="left")
-        ttk.Label(status_bar, text="Ctrl+K commands   Offline: no network calls",
-                  style="Dim.TLabel").pack(side="right")
-        status_bar.pack(side="bottom", fill="x", padx=theme.PAD, pady=(0, 4))
+        # ---- status bar ---------------------------------------------------
+        status_wrap = ttk.Frame(self)
+        status_wrap.pack(side="bottom", fill="x")
+        self._rule(status_wrap)
+        status_bar = ttk.Frame(status_wrap, padding=(theme.PAD_MD, theme.PAD_SM))
+        status_bar.pack(fill="x")
+        ttk.Label(status_bar, text="\u25cf", foreground=theme.ACCENT,
+                  font=self.fonts["mono_small"]).pack(side="left", padx=(0, theme.PAD_SM))
+        ttk.Label(status_bar, textvariable=self.status, style="Faint.TLabel").pack(side="left")
+        ttk.Label(status_bar, text="^K commands   \u2022   offline: no network calls",
+                  style="Faint.TLabel").pack(side="right")
         return frame
 
     def _build_detail(self, parent) -> None:
@@ -270,64 +381,108 @@ class LockboxApp(tk.Tk):
         self.type_var = tk.StringVar(value="login")
         self.favorite_var = tk.BooleanVar(value=False)
 
-        ttk.Label(parent, text="Details", style="Title.TLabel").pack(anchor="w")
-        form = ttk.Frame(parent)
-        form.pack(fill="x", pady=theme.PAD)
+        footer = ttk.Frame(parent)
+        footer.pack(fill="x", side="bottom")
+        self._rule(footer, pady=(theme.PAD_MD, theme.PAD_MD))
+        buttons = ttk.Frame(footer)
+        buttons.pack(fill="x", pady=(0, theme.PAD_SM))
+        ttk.Button(buttons, text="Save  ^S", style="Primary.TButton",
+                   command=self.save_item).pack(side="left")
+        ttk.Button(buttons, text="Delete", style="Danger.TButton",
+                   command=self.delete_item).pack(side="right")
 
-        def row(label: str, key: str, secret: bool = False):
-            container = ttk.Frame(form)
-            container.pack(fill="x", pady=2)
-            ttk.Label(container, text=label, width=10, style="Dim.TLabel").pack(side="left")
+        header = ttk.Frame(parent)
+        header.pack(fill="x")
+        self.detail_title = tk.StringVar(value="No item selected")
+        ttk.Label(header, textvariable=self.detail_title, style="Title.TLabel").pack(side="left")
+        self.detail_id = tk.StringVar(value="")
+        ttk.Label(header, textvariable=self.detail_id, style="Faint.TLabel").pack(
+            side="right", pady=(6, 0))
+        self._rule(parent, pady=(theme.PAD_SM, theme.PAD_MD))
+
+        def section(title: str, first: bool = False):
+            """A captioned group. Groups are separated by space, not borders."""
+            if not first:
+                ttk.Frame(parent, height=theme.PAD_MD).pack(fill="x")
+            ttk.Label(parent, text=theme.caption(title), style="Caption.TLabel").pack(anchor="w")
+            body = ttk.Frame(parent)
+            body.pack(fill="x", pady=(theme.PAD_SM, 0))
+            return body
+
+        def row(parent_frame, label: str, key: str, secret: bool = False):
+            container = ttk.Frame(parent_frame)
+            container.pack(fill="x", pady=theme.PAD_XS)
+            ttk.Label(container, text=label.lower(), width=9,
+                      style="Field.TLabel").pack(side="left")
             entry = ttk.Entry(container, textvariable=self.fields[key],
                               show="\u2022" if secret else "")
             entry.pack(side="left", fill="x", expand=True)
             return entry
 
-        row("Title", "title")
-        row("Username", "username")
-        self.password_field = row("Password", "password", secret=True)
-        password_buttons = ttk.Frame(form)
-        password_buttons.pack(fill="x", pady=(2, 6))
-        self.reveal_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(password_buttons, text="Show", variable=self.reveal_var,
-                        command=self._toggle_reveal).pack(side="left")
-        ttk.Button(password_buttons, text="Copy", command=self.copy_password).pack(
-            side="left", padx=4)
-        ttk.Button(password_buttons, text="Generate", command=self.fill_generated).pack(side="left")
-        self.strength_label = ttk.Label(form, text="", style="Dim.TLabel", wraplength=340)
-        self.strength_label.pack(anchor="w")
+        identity = section("identity", first=True)
+        row(identity, "Title", "title")
+        row(identity, "Username", "username")
+        row(identity, "URL", "url")
+
+        secret_box = section("secret")
+        self.password_field = row(secret_box, "Password", "password", secret=True)
+
+        meter_row = ttk.Frame(secret_box)
+        meter_row.pack(fill="x", padx=(theme.PAD_SM * 12, 0), pady=(theme.PAD_XS, 0))
+        self.strength_meter = ttk.Label(meter_row, text="", font=self.fonts["mono_small"],
+                                        foreground=theme.FG_FAINT)
+        self.strength_meter.pack(side="left")
+        self.strength_label = ttk.Label(meter_row, text="", style="Faint.TLabel")
+        self.strength_label.pack(side="left", padx=(theme.PAD_SM, 0))
+        self.strength_note = ttk.Label(secret_box, text="", style="Faint.TLabel",
+                                       wraplength=340)
+        self.strength_note.pack(anchor="w", padx=(theme.PAD_SM * 12, 0))
         self.fields["password"].trace_add("write", lambda *_: self._debounce_strength())
 
-        row("URL", "url")
-        row("Folder", "folder")
-        row("Tags", "tags")
-        row("TOTP", "totp_secret", secret=True)
+        password_buttons = ttk.Frame(secret_box)
+        password_buttons.pack(fill="x", pady=(theme.PAD_SM, 0),
+                              padx=(theme.PAD_SM * 12, 0))
+        self.reveal_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(password_buttons, text="show", variable=self.reveal_var,
+                        command=self._toggle_reveal).pack(side="left", padx=(0, theme.PAD_SM))
+        ttk.Button(password_buttons, text="copy", style="Ghost.TButton",
+                   command=self.copy_password).pack(side="left")
+        ttk.Button(password_buttons, text="generate", style="Ghost.TButton",
+                   command=self.fill_generated).pack(side="left", padx=(theme.PAD_XS, 0))
 
-        type_row = ttk.Frame(form)
-        type_row.pack(fill="x", pady=4)
-        ttk.Label(type_row, text="Type", width=10, style="Dim.TLabel").pack(side="left")
+        totp_box = section("two-factor")
+        row(totp_box, "TOTP", "totp_secret", secret=True)
+        code_row = ttk.Frame(totp_box)
+        code_row.pack(fill="x", pady=(theme.PAD_SM, 0), padx=(theme.PAD_SM * 12, 0))
+        self.totp_label = ttk.Label(code_row, text="\u2014", style="Code.TLabel")
+        self.totp_label.pack(side="left")
+        ttk.Button(code_row, text="copy code", style="Ghost.TButton",
+                   command=self.copy_totp).pack(side="right", pady=(theme.PAD_SM, 0))
+        self.totp_row = code_row
+        self.totp_progress = ttk.Progressbar(totp_box, maximum=30)
+        self._totp_packed = False
+
+        organise = section("organise")
+        row(organise, "Folder", "folder")
+        row(organise, "Tags", "tags")
+        type_row = ttk.Frame(organise)
+        type_row.pack(fill="x", pady=theme.PAD_XS)
+        ttk.Label(type_row, text="type", width=9, style="Field.TLabel").pack(side="left")
         ttk.Combobox(type_row, textvariable=self.type_var, values=list(ITEM_TYPES),
                      state="readonly", width=12).pack(side="left")
-        ttk.Checkbutton(type_row, text="Favorite", variable=self.favorite_var).pack(
-            side="left", padx=theme.PAD)
+        ttk.Checkbutton(type_row, text="favorite", variable=self.favorite_var).pack(
+            side="left", padx=theme.PAD_MD)
 
-        self.totp_label = ttk.Label(parent, text="", style="Code.TLabel")
-        self.totp_label.pack(anchor="w")
-        self.totp_progress = ttk.Progressbar(parent, maximum=30, length=200)
-        self.totp_progress.pack(anchor="w", pady=(0, theme.PAD))
-
-        ttk.Label(parent, text="Notes", style="Dim.TLabel").pack(anchor="w")
-        self.notes = tk.Text(parent, height=6, wrap="word", background=theme.BG_INPUT,
-                             foreground=theme.FG, insertbackground=theme.FG, borderwidth=0,
-                             font=self.fonts["base"], padx=6, pady=6)
+        notes_box = section("notes")
+        self.notes = tk.Text(notes_box, height=4, wrap="word", background=theme.BG_INPUT,
+                             foreground=theme.FG, insertbackground=theme.ACCENT_BRIGHT,
+                             borderwidth=0, highlightthickness=1,
+                             highlightbackground=theme.RULE, highlightcolor=theme.ACCENT,
+                             selectbackground=theme.ACCENT,
+                             font=self.fonts["mono"], padx=theme.PAD_SM, pady=theme.PAD_SM)
         self.notes.pack(fill="both", expand=True)
 
-        buttons = ttk.Frame(parent)
-        buttons.pack(fill="x", pady=theme.PAD)
-        ttk.Button(buttons, text="Save  (Ctrl+S)", command=self.save_item).pack(side="left")
-        ttk.Button(buttons, text="Delete", command=self.delete_item).pack(side="left",
-                                                                          padx=theme.PAD)
-        ttk.Button(buttons, text="Copy TOTP", command=self.copy_totp).pack(side="left")
+
 
     # ----------------------------------------------------------- bindings --
     def _bind_keys(self) -> None:
@@ -355,8 +510,8 @@ class LockboxApp(tk.Tk):
     def refresh(self) -> None:
         self.refresh_list()
         self.status.set(
-            f"{len(self.vault.items())} items - {os.path.basename(self.vault.path)} - "
-            f"{self.vault.kdf_description()}"
+            f"unlocked  \u2022  {len(self.vault.items())} items  \u2022  "
+            f"{os.path.basename(self.vault.path)}  \u2022  {self.vault.kdf_description()}"
         )
 
     def _debounce_search(self, delay: int = 120) -> None:
@@ -381,16 +536,50 @@ class LockboxApp(tk.Tk):
         if not self.vault.unlocked:
             return
         index = self.sidebar_list.curselection()
-        _key, _label, filter_query = CATEGORIES[index[0] if index else 0]
+        selected_index = index[0] if index else 0
+        _key, label, filter_query = CATEGORIES[selected_index]
         query = " ".join(part for part in (filter_query, self.query.get()) if part)
-        self.visible = vault_search(self.vault.items(), query)
+        items = self.vault.items()
+        self.visible = vault_search(items, query)
+
         self.tree.delete(*self.tree.get_children())
-        for item in self.visible:
-            marker = "* " if item.favorite else ""
-            self.tree.insert("", "end", iid=item.id,
-                             values=(marker + item.title, item.username,
-                                     TYPE_LABELS.get(item.type, item.type)))
+        for position, item in enumerate(self.visible):
+            tags = ["odd" if position % 2 else "even"]
+            if item.favorite:
+                tags.append("fav")
+            self.tree.insert(
+                "", "end", iid=item.id, tags=tuple(tags),
+                values=("\u2605" if item.favorite else "",
+                        item.title, item.username,
+                        TYPE_LABELS.get(item.type, item.type)),
+            )
+
+        self.list_caption.set(theme.caption(label) + f"   {len(self.visible)}")
+        if self.visible:
+            self.empty_label.place_forget()
+        else:
+            self.empty_label.configure(
+                text="no matches \u2014 clear the search (Esc) or press ^N for a new item"
+                if self.query.get() else "nothing here yet \u2014 press ^N to add an item"
+            )
+            self.empty_label.place(x=theme.PAD_MD, y=theme.ROW_HEIGHT + theme.PAD_MD)
+        self._refresh_sidebar_counts(items, selected_index)
         self.vault.touch_activity()
+
+    def _refresh_sidebar_counts(self, items, selected_index: int) -> None:
+        """Right-align a live count against each category.
+
+        Rewriting the Listbox clears its selection, so the caller\'s index is
+        restored afterwards -- otherwise the next refresh would silently fall
+        back to "All Items".
+        """
+        width = 18
+        self.sidebar_list.delete(0, tk.END)
+        for _key, label, filter_query in CATEGORIES:
+            count = len(vault_search(items, filter_query)) if filter_query else len(items)
+            self.sidebar_list.insert(tk.END, f" {label:<{width - 5}}{count:>4}")
+        self.sidebar_list.selection_clear(0, tk.END)
+        self.sidebar_list.selection_set(selected_index)
 
     def _category_changed(self, _event=None) -> None:
         self.refresh_list()
@@ -404,6 +593,8 @@ class LockboxApp(tk.Tk):
         except KeyError:
             return
         self.selected = item
+        self.detail_title.set(item.title or "(untitled)")
+        self.detail_id.set(item.id[:8])
         self.fields["title"].set(item.title)
         self.fields["username"].set(item.username)
         self.fields["password"].set(item.password)
@@ -420,6 +611,17 @@ class LockboxApp(tk.Tk):
         self._update_totp()
         self.vault.touch_activity()
 
+    def _show_totp_meter(self, visible: bool) -> None:
+        """Only show the countdown when there is a code to count down."""
+        if visible == self._totp_packed:
+            return
+        if visible:
+            self.totp_progress.pack(fill="x", padx=(theme.PAD_SM * 12, 0),
+                                    pady=(theme.PAD_XS, 0))
+        else:
+            self.totp_progress.pack_forget()
+        self._totp_packed = visible
+
     def _toggle_reveal(self) -> None:
         self.password_field.configure(show="" if self.reveal_var.get() else "\u2022")
 
@@ -428,40 +630,70 @@ class LockboxApp(tk.Tk):
 
         password = self.fields["password"].get()
         if not password:
+            self.strength_meter.configure(text="")
             self.strength_label.configure(text="")
+            self.strength_note.configure(text="")
             return
         result = analyze(password)
-        note = f"{result.estimated_bits:.0f} bits - {result.strength}"
-        if result.patterns:
-            note += f" - {result.patterns[0]}"
-        self.strength_label.configure(text=note)
+        filled = max(1, min(5, result.score + 1))
+        colour = theme.STRENGTH_COLORS[min(result.score, len(theme.STRENGTH_COLORS) - 1)]
+        self.strength_meter.configure(
+            text="\u2588" * filled + "\u2591" * (5 - filled), foreground=colour
+        )
+        self.strength_label.configure(
+            text=f"{result.strength}  \u2022  {result.estimated_bits:.0f} bits"
+        )
+        self.strength_note.configure(text=result.patterns[0] if result.patterns else "")
 
     def _update_totp(self) -> None:
         secret = self.fields["totp_secret"].get().strip()
         if not secret:
-            self.totp_label.configure(text="")
+            self.totp_label.configure(text="\u2014")
             self.totp_progress.configure(value=0)
+            self._show_totp_meter(False)
             return
         try:
-            config = OTPConfig(secret=secret, label=self.fields["title"].get() or "Lockbox")
+            config = parse_otpauth(secret)
             result = totp_current(config)
         except ValueError as exc:
             self.totp_label.configure(text=f"TOTP: {exc}")
             return
+        self._show_totp_meter(True)
         code = result["code"]
-        self.totp_label.configure(text=f"{code[:3]} {code[3:]}")
+        half = len(code) // 2
+        self.totp_label.configure(text=f"{code[:half]} {code[half:]}")
         self.totp_progress.configure(maximum=result["period"],
                                      value=result["seconds_remaining"])
 
     # ------------------------------------------------------------ actions --
+    def _clear_detail(self) -> None:
+        for var in self.fields.values():
+            var.set("")
+        self.notes.delete("1.0", tk.END)
+        self.detail_title.set("No item selected")
+        self.detail_id.set("")
+        self.totp_label.configure(text="\u2014")
+        self.totp_progress.configure(value=0)
+        self._show_totp_meter(False)
+        self.strength_meter.configure(text="")
+        self.strength_label.configure(text="")
+        self.strength_note.configure(text="")
+
     def new_item(self) -> None:
         if not self.vault.unlocked:
             return
         item = Item(title="New item", type="login")
         self.vault.add(item)
+        # An active search or category filter can hide the row that was just
+        # created, and selecting an absent iid raises. Clear the filter first so
+        # the new item is always there to select.
+        self.query.set("")
+        self.sidebar_list.selection_clear(0, tk.END)
+        self.sidebar_list.selection_set(0)
         self.refresh_list()
-        self.tree.selection_set(item.id)
-        self.tree.see(item.id)
+        if self.tree.exists(item.id):
+            self.tree.selection_set(item.id)
+            self.tree.see(item.id)
         self.fields["title"].set("")
         self.detail.focus_set()
 
@@ -481,7 +713,9 @@ class LockboxApp(tk.Tk):
         secret = self.fields["totp_secret"].get().strip()
         if secret:
             try:
-                item.totp_secret = parse_otpauth(secret).secret
+                config = parse_otpauth(secret)  # validates
+                item.totp_secret = secret if secret.lower().startswith("otpauth://") \
+                    else config.secret
             except ValueError as exc:
                 messagebox.showerror("TOTP", f"Not a usable TOTP secret: {exc}")
                 return
@@ -510,9 +744,7 @@ class LockboxApp(tk.Tk):
         self.vault.delete(self.selected.id)
         self.vault.save()
         self.selected = None
-        for var in self.fields.values():
-            var.set("")
-        self.notes.delete("1.0", tk.END)
+        self._clear_detail()
         self.refresh()
 
     def fill_generated(self) -> None:
@@ -542,7 +774,7 @@ class LockboxApp(tk.Tk):
         if not secret:
             return
         try:
-            self._copy(totp_current(OTPConfig(secret=secret))["code"], "TOTP code")
+            self._copy(totp_current(parse_otpauth(secret))["code"], "TOTP code")
         except ValueError as exc:
             messagebox.showerror("TOTP", str(exc))
 
@@ -558,9 +790,7 @@ class LockboxApp(tk.Tk):
             self.vault.lock()
         self.selected = None
         self.visible = []
-        for var in self.fields.values():
-            var.set("")
-        self.notes.delete("1.0", tk.END)
+        self._clear_detail()
         self.tree.delete(*self.tree.get_children())
         self.status.set("Locked")
         self._show_unlock()

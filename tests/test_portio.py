@@ -85,10 +85,26 @@ class TestImport(unittest.TestCase):
         self.assertEqual(reddit.url, "https://reddit.com")
         self.assertEqual(reddit.totp_secret, "JBSWY3DPEHPK3PXP")
 
-    def test_otpauth_uri_in_import_is_normalised(self):
-        text = ("name,password,totp\nX,p,"
-                "otpauth://totp/X?secret=JBSWY3DPEHPK3PXP&issuer=X\n")
+    def test_bare_totp_secret_is_normalised(self):
+        text = "name,password,totp\nX,p,jbsw y3dp ehpk 3pxp\n"
         self.assertEqual(portio.import_csv(text).items[0].totp_secret, "JBSWY3DPEHPK3PXP")
+
+    def test_otpauth_uri_keeps_its_parameters(self):
+        """A URI must survive import intact: digits/period/algorithm change the code."""
+        from lockbox.tools.otp import parse_otpauth
+
+        uri = ("otpauth://totp/X?secret=JBSWY3DPEHPK3PXP&issuer=X"
+               "&algorithm=SHA256&digits=8&period=60")
+        text = f"name,password,totp\nX,p,{uri}\n"
+        stored = portio.import_csv(text).items[0].totp_secret
+        self.assertEqual(stored, uri)
+        config = parse_otpauth(stored)
+        self.assertEqual((config.algorithm, config.digits, config.period),
+                         ("SHA256", 8, 60))
+
+    def test_non_dict_rows_do_not_crash_import(self):
+        result = portio.import_json('{"logins": ["junk", {"name": "X", "password": "p"}]}')
+        self.assertEqual(len(result.items), 1)
 
     def test_invalid_json_warns(self):
         result = portio.import_json("{not json")

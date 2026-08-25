@@ -135,7 +135,9 @@ def cmd_add(args) -> int:
         if item.totp_secret:
             from .tools.otp import parse_otpauth
 
-            item.totp_secret = parse_otpauth(item.totp_secret).secret
+            config = parse_otpauth(item.totp_secret)  # validates
+            if not item.totp_secret.lower().startswith("otpauth://"):
+                item.totp_secret = config.secret
         vault.add(item)
         vault.save()
         print(f"Added {item.title} [{item.id[:8]}]")
@@ -186,9 +188,9 @@ def cmd_show(args) -> int:
                     continue
                 print(f"{key:<18} {value}")
             if item.totp_secret and args.reveal:
-                from .tools.otp import OTPConfig, current
+                from .tools.otp import current, parse_otpauth
 
-                code = current(OTPConfig(secret=item.totp_secret, label=item.title))
+                code = current(parse_otpauth(item.totp_secret))
                 print(f"{'totp_now':<18} {code['code']}  ({code['seconds_remaining']}s left)")
         if args.copy:
             clip = Clipboard()
@@ -254,14 +256,14 @@ def cmd_rm(args) -> int:
 
 
 def cmd_totp(args) -> int:
-    from .tools.otp import OTPConfig, current
+    from .tools.otp import current, parse_otpauth
 
     vault = _open_vault(args)
     try:
         item = _resolve(vault, args.query)
         if not item.totp_secret:
             return _err(f"{item.title} has no TOTP secret")
-        config = OTPConfig(secret=item.totp_secret, label=item.title)
+        config = parse_otpauth(item.totp_secret)
         if not args.watch:
             result = current(config)
             print(f"{result['code']}   ({result['seconds_remaining']}s remaining)")

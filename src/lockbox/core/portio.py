@@ -119,9 +119,15 @@ def _to_item(mapped: Dict[str, Any]) -> Optional[Item]:
         from ..tools.otp import parse_otpauth
 
         try:
-            totp_secret = parse_otpauth(totp_raw).secret
+            config = parse_otpauth(totp_raw)
         except ValueError:
             totp_secret = ""
+        else:
+            # Keep the whole otpauth:// URI: it carries algorithm, digits and
+            # period, and reducing it to the bare secret silently forces the
+            # SHA1/6/30 defaults and produces codes the site rejects.
+            totp_secret = totp_raw if totp_raw.lower().startswith("otpauth://") \
+                else config.secret
 
     item_type = str(mapped.get("type") or "").strip().lower()
     if item_type not in ("login", "note", "card", "identity", "api_key"):
@@ -189,8 +195,8 @@ def import_json(text: str) -> ImportResult:
         if isinstance(data.get("items"), list):  # native Lockbox export
             rows = [r for r in data["items"] if isinstance(r, dict)]
             result.source_format = f"Lockbox JSON (schema {data.get('schema', '?')})"
-        elif isinstance(data.get("items"), list) or isinstance(data.get("logins"), list):
-            rows = list(data.get("items") or data.get("logins") or [])
+        elif isinstance(data.get("logins"), list):
+            rows = [r for r in data["logins"] if isinstance(r, dict)]
             result.source_format = "JSON (object)"
         else:
             for key in ("accounts", "entries", "passwords", "data"):

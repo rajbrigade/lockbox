@@ -249,6 +249,7 @@ class Vault:
 
         blob = vaultfile.read_file(self.path)
         state: Dict[str, Any] = {}
+        payload_state: Dict[str, Any] = {}
 
         check("file readable", lambda: state.update(size=len(blob)))
         ok = check("header parses", lambda: state.update(hdr=vaultfile.parse_header(blob)))
@@ -258,19 +259,20 @@ class Vault:
                 "cipher is AES-256-GCM",
                 lambda: _assert(header.get("cipher") == "AES-256-GCM", "unexpected cipher"),
             )
+            body_state: Dict[str, Any] = {}
             check(
                 "body authenticates",
-                lambda: crypto.decrypt(bytes(self._keys.dek), body, prefix),
+                lambda: body_state.update(
+                    pt=crypto.decrypt(bytes(self._keys.dek), body, prefix)
+                ),
             )
-        payload_state: Dict[str, Any] = {}
-        check(
-            "payload decodes",
-            lambda: payload_state.update(
-                p=normalise_payload(
-                    _decode_payload(crypto.decrypt(bytes(self._keys.dek), body, prefix))
+            if "pt" in body_state:
+                check(
+                    "payload decodes",
+                    lambda: payload_state.update(
+                        p=normalise_payload(_decode_payload(body_state["pt"]))
+                    ),
                 )
-            ),
-        )
         if "p" in payload_state:
             items = payload_state["p"].get("items", [])
             check(
