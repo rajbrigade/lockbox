@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec.bak
+*.egg-info/
+.venv/
+venv/
+
+# Never commit vaults, backups or exports.
+*.lbx
+*.lbx.prev
+backups/
+*export*.csv
+*export*.json

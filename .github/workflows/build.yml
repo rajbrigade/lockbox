@@ -1,0 +1,63 @@
+name: build
+
+# Builds the executables on each platform, because PyInstaller cannot
+# cross-compile: the Windows .exe must be produced by a Windows runner.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python run_tests.py
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: lockbox-windows-x64
+            exe: lockbox.exe
+          - os: macos-latest
+            artifact: lockbox-macos-arm64
+            exe: lockbox
+          - os: ubuntu-latest
+            artifact: lockbox-linux-x64
+            exe: lockbox
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Tk ships with the Windows and macOS installers; Linux needs the package.
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      - name: Verify the binary
+        run: python verify_binary.py dist/${{ matrix.exe }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/lockbox*
+          if-no-files-found: error

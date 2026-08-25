@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lockbox"
+version = "1.0.0"
+description = "An offline, local-only password manager and security toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["password-manager", "offline", "local-first", "privacy", "argon2"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security :: Cryptography",
+]
+
+# Two dependencies, both audited implementations of primitives that must never
+# be hand-written. Everything else is the Python standard library, including the
+# GUI (Tk). No package here performs network I/O of its own accord.
+dependencies = [
+    "cryptography>=41",   # AES-256-GCM via OpenSSL
+    "argon2-cffi>=21.3",  # Argon2id reference implementation
+]
+
+[project.optional-dependencies]
+# Development only. Never imported at runtime; not needed to install or use
+# Lockbox. `qrcode` is used solely to cross-check our QR encoder in tests.
+dev = ["qrcode>=7.4"]
+
+[project.scripts]
+lockbox = "lockbox.cli:main"
+
+[project.gui-scripts]
+lockbox-gui = "lockbox.ui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lockbox = ["py.typed"]

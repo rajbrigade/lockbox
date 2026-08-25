@@ -1,0 +1,3 @@
+# Runtime dependencies. That is the whole list.
+cryptography>=41
+argon2-cffi>=21.3

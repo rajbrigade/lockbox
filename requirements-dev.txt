@@ -1,0 +1,6 @@
+-r requirements.txt
+# Test-only. Used to cross-check the QR encoder against a reference
+# implementation. Not imported by the application.
+qrcode>=7.4
+# Freezing to a standalone executable (build.py). Build-time only.
+pyinstaller>=6.0
