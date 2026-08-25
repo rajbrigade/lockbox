@@ -28,6 +28,28 @@ APP_NAME = "lockbox"
 GUI_NAME = "lockbox-gui"
 ROOT = Path(SPECPATH).resolve()
 SRC = ROOT / "src"
+ASSETS = ROOT / "assets"
+
+# Executable icon. Windows wants .ico, macOS wants .icns, Linux ignores it
+# entirely (the desktop file supplies the icon there). Missing file means
+# icon=None rather than a build error, so a fresh checkout still builds.
+ICON_ICO = ASSETS / "lockbox.ico"
+ICON_ICNS = ASSETS / "lockbox.icns"
+if sys.platform == "win32" and ICON_ICO.exists():
+    APP_ICON = str(ICON_ICO)
+elif sys.platform == "darwin" and ICON_ICNS.exists():
+    APP_ICON = str(ICON_ICNS)
+else:
+    APP_ICON = None
+
+# The window icon is loaded at runtime by lockbox.ui.app, so the files have to
+# travel inside the binary as data. Tk reads PNG natively (8.6+); .ico is used
+# via iconbitmap on Windows. Both are tiny.
+ICON_DATAS = [
+    (str(path), "assets")
+    for path in (ICON_ICO, ASSETS / "lockbox.png")
+    if path.exists()
+]
 
 BUILD_GUI = "--cli-only" not in sys.argv
 
@@ -86,7 +108,7 @@ cli_analysis = Analysis(
     [str(ROOT / "cli_entry.py")],
     pathex=[str(SRC)],
     binaries=[],
-    datas=[],
+    datas=ICON_DATAS,
     hiddenimports=HIDDEN,
     hookspath=[],
     runtime_hooks=[],
@@ -114,7 +136,7 @@ cli_exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=APP_ICON,
 )
 
 if not ONEFILE:
@@ -132,7 +154,7 @@ if BUILD_GUI:
         [str(ROOT / "gui_entry.py")],
         pathex=[str(SRC)],
         binaries=[],
-        datas=[],
+        datas=ICON_DATAS,
         hiddenimports=HIDDEN + ["tkinter", "tkinter.ttk", "tkinter.filedialog",
                                 "tkinter.messagebox", "tkinter.simpledialog"],
         hookspath=[],
@@ -161,7 +183,7 @@ if BUILD_GUI:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
-        icon=None,
+        icon=APP_ICON,
     )
 
     if not ONEFILE:

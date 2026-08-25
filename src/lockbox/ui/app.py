@@ -1,7 +1,11 @@
 """The Lockbox desktop window (Tk, standard library only).
 
 One window, three panes: categories, item list, detail. A modal unlock screen
-in front of it. No web view, no browser engine, no bundled runtime, no images.
+in front of it. No web view, no browser engine, no bundled runtime.
+
+The only image the process ever loads is the window icon, read once at startup
+from `assets/` and handed straight to Tk. Nothing else touches the disk for
+presentation.
 
 Timers use Tk's own `after()` rather than threads, so the process has exactly
 one thread and sits at zero CPU when idle: the auto-lock tick runs once a
@@ -46,12 +50,33 @@ CATEGORIES = [
 ]
 
 
+def _asset(name: str) -> Optional[str]:
+    """Locate a bundled asset, frozen or not.
+
+    PyInstaller unpacks `datas` into `sys._MEIPASS` at launch; a source
+    checkout has them in `assets/` beside the package. Try both, return None
+    if neither has it.
+    """
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(os.path.join(meipass, "assets"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots.append(os.path.abspath(os.path.join(here, "..", "..", "..", "assets")))
+    for root in roots:
+        candidate = os.path.join(root, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 class LockboxApp(tk.Tk):
     def __init__(self, vault_path: Optional[str] = None):
         super().__init__()
         self.title(f"Lockbox {__version__}")
         self.geometry("1240x780")
         self.minsize(1000, 620)
+        self._set_window_icon()
         theme.apply_styles(self)
         self.fonts = theme.fonts()
 
@@ -76,6 +101,36 @@ class LockboxApp(tk.Tk):
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self._quit)
         self.after(1000, self._tick)
+
+    def _set_window_icon(self) -> None:
+        """Put the app icon on the window, best effort.
+
+        Windows takes the .ico through iconbitmap and uses it for the title bar
+        and Alt-Tab. Everywhere else Tk wants a PhotoImage, which Tk 8.6 can
+        build from PNG without Pillow -- which matters, since PIL is excluded
+        from the frozen binary on purpose.
+
+        A missing or unreadable icon is cosmetic, never fatal: the window still
+        opens with Tk's default. Keep the reference on self or Tk garbage
+        collects the image and the icon silently blanks.
+        """
+        if sys.platform == "win32":
+            ico = _asset("lockbox.ico")
+            if ico:
+                try:
+                    self.iconbitmap(default=ico)
+                    return
+                except tk.TclError:
+                    pass  # fall through to the PNG path
+
+        png = _asset("lockbox.png")
+        if not png:
+            return
+        try:
+            self._icon_image = tk.PhotoImage(file=png)
+            self.iconphoto(True, self._icon_image)
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------- unlock --
     def _build_unlock(self) -> ttk.Frame:
