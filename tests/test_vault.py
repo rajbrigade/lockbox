@@ -12,7 +12,7 @@ from lockbox.core.errors import DecryptError, VaultFormatError, VaultLockedError
 from lockbox.core.kdf import KDFParams
 from lockbox.core.model import Item, normalise_payload
 from lockbox.core.search import parse_query, search
-from lockbox.core.vault import Vault
+from lockbox.core.vault import Vault, default_vault_path
 
 POSIX_PERMS = sys.platform != "win32"
 NO_PERMS_REASON = (
@@ -184,6 +184,30 @@ class TestIntegrity(VaultTestCase):
         report = self.vault.integrity_check()
         self.assertFalse(report["ok"])
         self.assertTrue(any("authenticates" in e for e in report["errors"]))
+
+
+class TestDefaultPath(unittest.TestCase):
+    """LOCKBOX_VAULT must be honoured in core, not only by the CLI parser --
+    the GUI entry point takes no arguments and would otherwise ignore it."""
+
+    def setUp(self):
+        self._saved = os.environ.get("LOCKBOX_VAULT")
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("LOCKBOX_VAULT", None)
+        else:
+            os.environ["LOCKBOX_VAULT"] = self._saved
+
+    def test_env_override_is_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "elsewhere.lbx")
+            os.environ["LOCKBOX_VAULT"] = target
+            self.assertEqual(default_vault_path(), os.path.abspath(target))
+
+    def test_without_the_env_var_the_data_dir_is_used(self):
+        os.environ.pop("LOCKBOX_VAULT", None)
+        self.assertTrue(default_vault_path().endswith("vault.lbx"))
 
 
 class TestModel(unittest.TestCase):

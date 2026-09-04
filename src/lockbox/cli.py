@@ -283,38 +283,47 @@ def cmd_totp(args) -> int:
 
 
 def cmd_gen(args) -> int:
+    """Generate one or more secrets.
+
+    `--count` draws a fresh secret every time. Generating once and printing the
+    same value N times would hand out N identical passwords, and regenerating
+    with only `--length` would quietly drop `--no-symbols` and friends -- both
+    of which this used to do.
+    """
     from .tools.generators import (
         generate_api_key, generate_passphrase, generate_password, generate_pronounceable,
     )
 
-    if args.kind == "passphrase":
-        result = generate_passphrase(words=args.words, separator=args.separator,
-                                     capitalize=args.capitalize, add_number=args.number)
-    elif args.kind == "pronounceable":
-        result = generate_pronounceable(length=args.length)
-    elif args.kind == "apikey":
-        result = generate_api_key(prefix=args.prefix, nbytes=max(16, args.length))
-    else:
-        result = generate_password(
+    def make():
+        if args.kind == "passphrase":
+            return generate_passphrase(words=args.words, separator=args.separator,
+                                       capitalize=args.capitalize, add_number=args.number)
+        if args.kind == "pronounceable":
+            return generate_pronounceable(length=args.length)
+        if args.kind == "apikey":
+            return generate_api_key(prefix=args.prefix, nbytes=max(16, args.length))
+        return generate_password(
             length=args.length, uppercase=not args.no_upper, digits=not args.no_digits,
             symbols=not args.no_symbols, exclude=args.exclude,
             exclude_ambiguous=args.no_ambiguous,
         )
-    for _ in range(max(1, args.count) - 1):
-        print(result.value)
-        result = generate_password(length=args.length) if args.kind == "password" else result
-    if args.json:
-        print(json.dumps(result.to_dict(), indent=2))
-    else:
-        print(result.value)
-        if not args.quiet:
-            from .tools.analysis import strength_label
 
-            print(
-                f"  {result.entropy_bits:.1f} bits ({strength_label(result.entropy_bits)})"
-                f"  alphabet={result.alphabet_size}",
-                file=sys.stderr,
-            )
+    results = [make() for _ in range(max(1, args.count))]
+    if args.json:
+        payload = [r.to_dict() for r in results]
+        print(json.dumps(payload[0] if len(payload) == 1 else payload, indent=2))
+        return 0
+    for result in results:
+        print(result.value)
+    if not args.quiet:
+        from .tools.analysis import strength_label
+
+        last = results[-1]
+        print(
+            f"  {last.entropy_bits:.1f} bits ({strength_label(last.entropy_bits)})"
+            f"  alphabet={last.alphabet_size}",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -352,6 +361,10 @@ def cmd_audit(args) -> int:
 
 def cmd_backup(args) -> int:
     vault = Vault(args.vault)
+    # `path` is optional on the parser because create/list do not take one.
+    # Without this guard the None reaches open() and raises a TypeError.
+    if args.action in ("verify", "restore") and not args.path:
+        return _err(f"'backup {args.action}' needs the path to a backup file")
     if args.action == "create":
         info = backup_mod.create_backup(vault.path, args.dir, keep=args.keep, label=args.label)
         _emit(info.to_dict(), args.json, lambda d: print(f"Backup written: {d['path']} "
@@ -793,7 +806,22 @@ def cmd_gui(args) -> int:
         from .ui.app import main as gui_main
     except ImportError as exc:
         return _err(f"the GUI needs Tk: {exc}. On Debian/Ubuntu: apt install python3-tk")
-    return gui_main(args.vault)
+    try:
+        return gui_main(args.vault)
+    except tk_error() as exc:
+        # Tk imports fine on a headless machine and then fails to connect to a
+        # display. That is a message, not a traceback.
+        return _err(f"the GUI could not open a window: {exc}. Use the CLI instead.")
+
+
+def tk_error():
+    """The Tk exception type, or a type that never matches if Tk is absent."""
+    try:
+        import tkinter
+
+        return tkinter.TclError
+    except Exception:  # pragma: no cover - Tk missing is handled by the caller
+        return ()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

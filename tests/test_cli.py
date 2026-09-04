@@ -127,6 +127,43 @@ class TestCLI(CLITestCase):
             main(["gen", "passphrase", "--words", "7", "--quiet"])
         self.assertEqual(len(out.getvalue().strip().split("-")), 7)
 
+    def _gen_lines(self, *args):
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = main(["gen", *args, "--quiet"])
+        self.assertEqual(code, 0)
+        return out.getvalue().strip().splitlines()
+
+    def test_gen_count_draws_a_fresh_secret_every_time(self):
+        for kind in ("password", "passphrase", "pronounceable", "apikey"):
+            with self.subTest(kind=kind):
+                lines = self._gen_lines(kind, "-n", "4")
+                self.assertEqual(len(lines), 4)
+                self.assertEqual(len(set(lines)), 4, f"{kind} repeated a secret")
+
+    def test_gen_count_honours_the_character_class_flags(self):
+        lines = self._gen_lines("password", "-n", "5", "--no-symbols", "--no-digits")
+        self.assertEqual(len(lines), 5)
+        for value in lines:
+            self.assertTrue(value.isalpha(), value)
+
+    def test_gen_json_shape_follows_the_count(self):
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            main(["gen", "--json"])
+        self.assertIsInstance(json.loads(out.getvalue()), dict)
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            main(["gen", "-n", "3", "--json"])
+        self.assertEqual(len(json.loads(out.getvalue())), 3)
+
+    def test_backup_verify_without_a_path_is_an_error_not_a_crash(self):
+        for action in ("verify", "restore"):
+            with self.subTest(action=action):
+                code, _out, err = self.run_cli("backup", action)
+                self.assertEqual(code, 1)
+                self.assertIn("needs the path", err)
+
     def test_audit(self):
         self.run_cli("add", "Weak", "-p", "password", "--url", "http://x.example")
         code, out, _ = self.run_cli("audit")

@@ -154,7 +154,12 @@ def parse_otpauth(uri: str) -> OTPConfig:
     """Parse an otpauth:// URI (what a QR code contains) or a bare secret."""
     raw = (uri or "").strip()
     if not raw.lower().startswith("otpauth://"):
-        return OTPConfig(secret=normalise_secret(raw))
+        # Validate here too. `normalise_secret` drops every character outside
+        # the base32 alphabet, so unvalidated junk became an empty secret and
+        # was stored as a TOTP configuration that can never produce a code.
+        config = OTPConfig(secret=normalise_secret(raw))
+        config.validate()
+        return config
     parts = urlsplit(raw)
     if parts.netloc.lower() not in ("totp", ""):
         raise ValueError("only otpauth://totp URIs are supported")

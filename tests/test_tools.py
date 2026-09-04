@@ -277,6 +277,14 @@ class TestOTP(unittest.TestCase):
         self.assertEqual(parse_otpauth("jbswy3dpehpk3pxp").secret, "JBSWY3DPEHPK3PXP")
         self.assertEqual(parse_otpauth("JBSW Y3DP EHPK 3PXP").secret, "JBSWY3DPEHPK3PXP")
 
+    def test_bare_secret_of_junk_is_rejected(self):
+        # Every character here is outside the base32 alphabet, so normalising
+        # leaves nothing. This must raise rather than yield an empty secret the
+        # caller then stores as a working TOTP configuration.
+        for junk in ("!!! not base32 !!!", "", "----", "0189"):
+            with self.subTest(junk=junk), self.assertRaises(ValueError):
+                parse_otpauth(junk)
+
     def test_config_validation(self):
         with self.assertRaises(ValueError):
             OTPConfig(secret=generate_secret(), algorithm="MD5").validate()

@@ -99,8 +99,9 @@ class CommandPalette(tk.Toplevel):
         self.listbox.bind("<Double-Button-1>", self._run)
         # Clicking the window underneath dismisses, the way a menu would.
         self.bind("<FocusOut>", self._maybe_close)
-        parent.bind("<Button-1>", self._click_outside, add="+")
-        self._click_binding = True
+        # Keep the funcid: `unbind(sequence)` with no id drops *every* handler
+        # on that sequence, including ones the main window installed itself.
+        self._click_binding = parent.bind("<Button-1>", self._click_outside, add="+")
 
         self._refresh()
         self._place(parent)
@@ -201,12 +202,12 @@ class CommandPalette(tk.Toplevel):
             self.grab_release()
         except tk.TclError:
             pass
-        if getattr(self, "_click_binding", False):
+        if getattr(self, "_click_binding", None):
             try:
-                self.parent.unbind("<Button-1>")
+                self.parent.unbind("<Button-1>", self._click_binding)
             except tk.TclError:
                 pass
-            self._click_binding = False
+            self._click_binding = None
         try:
             self.parent.focus_force()
         except tk.TclError:

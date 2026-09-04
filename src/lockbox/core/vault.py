@@ -39,6 +39,15 @@ def default_data_dir() -> str:
 
 
 def default_vault_path() -> str:
+    """The vault to use when no path was given.
+
+    `LOCKBOX_VAULT` is honoured here rather than only in the CLI argument
+    parser, so the GUI entry point -- which takes no arguments -- respects it
+    too. `LOCKBOX_VAULT` names a file; `LOCKBOX_HOME` names the directory.
+    """
+    env = os.environ.get("LOCKBOX_VAULT")
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
     return os.path.join(default_data_dir(), VAULT_FILENAME)
 
 

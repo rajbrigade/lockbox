@@ -87,6 +87,7 @@ class LockboxApp(tk.Tk):
         self.status = tk.StringVar(value="Locked")
         self.visible: List[Item] = []
         self.selected: Optional[Item] = None
+        self._pending_new: Optional[Item] = None  # drafted by ^N, added on save
         self._totp_job = None
         self._unlocking = False
         self._unlock_result = None
@@ -96,6 +97,7 @@ class LockboxApp(tk.Tk):
         self._palette = None
 
         self.unlock_frame = self._build_unlock()
+        self.path_var.trace_add("write", self._sync_create_mode)
         self.main_frame = self._build_main()
         self._show_unlock()
         self._bind_keys()
@@ -171,6 +173,21 @@ class LockboxApp(tk.Tk):
         self.password_entry.pack(side="left", fill="x", expand=True)
         self.password_entry.bind("<Return>", lambda _e: self._unlock())
 
+        # Only shown when the path has no vault yet. Creating a vault from a
+        # single typed password means one typo produces a vault nobody can ever
+        # open -- there is no recovery -- so the create path asks twice, exactly
+        # as `lockbox init` does.
+        self.confirm_caption = ttk.Label(inner, text=theme.caption("confirm password"),
+                                         style="Caption.TLabel")
+        self.confirm_row = ttk.Frame(inner)
+        ttk.Label(self.confirm_row, text="\u203a", foreground=theme.ACCENT_BRIGHT,
+                  font=self.fonts["mono_big"]).pack(side="left", padx=(0, theme.PAD_SM))
+        self.confirm_var = tk.StringVar()
+        self.confirm_entry = ttk.Entry(self.confirm_row, textvariable=self.confirm_var,
+                                       show="\u2022", width=48)
+        self.confirm_entry.pack(side="left", fill="x", expand=True)
+        self.confirm_entry.bind("<Return>", lambda _e: self._unlock())
+
         self.unlock_button = ttk.Button(inner, text="Unlock", style="Primary.TButton",
                                         command=self._unlock)
         self.unlock_button.pack(fill="x")
@@ -201,14 +218,31 @@ class LockboxApp(tk.Tk):
         self.main_frame.pack_forget()
         self.unlock_frame.pack(fill="both", expand=True)
         self.password_var.set("")
+        self.confirm_var.set("")
         self.path_var.set(self.vault.path)
+        self._sync_create_mode()
+        self.password_entry.focus_set()
+
+    def _sync_create_mode(self, *_args) -> None:
+        """Show or hide the confirmation field to match the chosen path.
+
+        The path is editable, so this runs on every change to it rather than
+        once when the screen appears.
+        """
         exists = os.path.exists(self.path_var.get())
         self.unlock_button.configure(text="Unlock" if exists else "Create vault")
         self.unlock_message.configure(
             text="" if exists else "No vault at this path. Entering a password creates one. "
                                    "There is no recovery if you forget it."
         )
-        self.password_entry.focus_set()
+        if exists:
+            self.confirm_row.pack_forget()
+            self.confirm_caption.pack_forget()
+            self.confirm_var.set("")
+        else:
+            self.confirm_caption.pack(anchor="w", before=self.unlock_button)
+            self.confirm_row.pack(fill="x", pady=(theme.PAD_XS, theme.PAD_MD),
+                                  before=self.unlock_button)
 
     def _unlock(self) -> None:
         """Start unlocking. The KDF runs on a worker thread.
@@ -227,14 +261,25 @@ class LockboxApp(tk.Tk):
             self.unlock_message.configure(text="Enter a master password.")
             return
         vault = Vault(self.path_var.get())
-        if not vault.exists and len(password) < 8:
-            self.unlock_message.configure(text="Use at least 8 characters.")
-            return
+        if not vault.exists:
+            if len(password) < 8:
+                self.unlock_message.configure(text="Use at least 8 characters.")
+                return
+            if self.confirm_var.get() != self.password_var.get():
+                self.unlock_message.configure(
+                    text="The two passwords do not match. A vault created with a "
+                         "typo cannot be opened again."
+                )
+                self.confirm_var.set("")
+                self.confirm_entry.focus_set()
+                return
 
         self._unlocking = True
         self.password_var.set("")
+        self.confirm_var.set("")
         self.unlock_button.configure(state="disabled")
         self.password_entry.configure(state="disabled")
+        self.confirm_entry.configure(state="disabled")
         self._unlock_result = None
         self._progress_step = 0
         self._animate_unlock()
@@ -278,6 +323,7 @@ class LockboxApp(tk.Tk):
         self._unlocking = False
         self.unlock_button.configure(state="normal")
         self.password_entry.configure(state="normal")
+        self.confirm_entry.configure(state="normal")
         status, payload = self._unlock_result
         self._unlock_result = None
         if status == "error":
@@ -474,6 +520,9 @@ class LockboxApp(tk.Tk):
             entry = ttk.Entry(container, textvariable=self.fields[key],
                               show="\u2022" if secret else "")
             entry.pack(side="left", fill="x", expand=True)
+            # Typing is activity. Without this the idle timer only saw list and
+            # selection changes, so the vault auto-locked mid-edit.
+            entry.bind("<KeyRelease>", self._note_activity, add="+")
             return entry
 
         identity = section("identity", first=True)
@@ -538,6 +587,13 @@ class LockboxApp(tk.Tk):
                              selectbackground=theme.ACCENT,
                              font=self.fonts["mono"], padx=theme.PAD_SM, pady=theme.PAD_SM)
         self.notes.pack(fill="both", expand=True)
+        self.notes.bind("<KeyRelease>", self._note_activity, add="+")
+        self.search_entry.bind("<KeyRelease>", self._note_activity, add="+")
+
+    def _note_activity(self, _event=None) -> None:
+        """Reset the idle timer. Bound to every field the user types into."""
+        if self.vault.unlocked:
+            self.vault.touch_activity()
 
 
 
@@ -690,6 +746,7 @@ class LockboxApp(tk.Tk):
             item = self.vault.get(selection[0])
         except KeyError:
             return
+        self._pending_new = None  # selecting a stored row abandons the draft
         self.selected = item
         self.detail_title.set(item.title or "(untitled)")
         self.detail_id.set(item.id[:8])
@@ -778,27 +835,53 @@ class LockboxApp(tk.Tk):
         self.strength_note.configure(text="")
 
     def new_item(self) -> None:
+        """Open a blank draft. Nothing reaches the vault until Save.
+
+        Adding the item up front marked the vault dirty, so every abandoned
+        "New item" was written out by the next lock or quit and the vault filled
+        with blank rows. The draft is held here instead and only added on save.
+        """
         if not self.vault.unlocked:
             return
-        item = Item(title="New item", type="login")
-        self.vault.add(item)
-        # An active search or category filter can hide the row that was just
-        # created, and selecting an absent iid raises. Clear the filter first so
-        # the new item is always there to select.
+        # An active search or category filter would hide the row once it is
+        # saved, so clear the filter now rather than after the write.
         self.query.set("")
         self.sidebar_list.selection_clear(0, tk.END)
         self.sidebar_list.selection_set(0)
         self.refresh_list()
-        if self.tree.exists(item.id):
-            self.tree.selection_set(item.id)
-            self.tree.see(item.id)
-        self.fields["title"].set("")
+        self.tree.selection_remove(*self.tree.selection())
+
+        self._pending_new = Item(type="login")
+        self.selected = self._pending_new
+        self._clear_detail()
+        self.detail_title.set("New item")
+        self.detail_id.set("unsaved")
+        self.type_var.set("login")
+        self.favorite_var.set(False)
+        self.reveal_var.set(False)
+        self.password_field.configure(show="•")
+        self.status.set("New item - press ^S to save it into the vault")
         self.detail.focus_set()
 
     def save_item(self) -> None:
         if not (self.vault.unlocked and self.selected):
             return
         item = self.selected
+
+        # Validate everything that can be rejected *before* touching the item.
+        # Writing the fields first and bailing on a bad TOTP secret left the
+        # edits applied in memory with the vault still marked clean.
+        secret = self.fields["totp_secret"].get().strip()
+        if secret:
+            try:
+                config = parse_otpauth(secret)  # validates
+            except ValueError as exc:
+                messagebox.showerror("TOTP", f"Not a usable TOTP secret: {exc}")
+                return
+            totp_secret = secret if secret.lower().startswith("otpauth://") else config.secret
+        else:
+            totp_secret = ""
+
         item.title = self.fields["title"].get().strip() or "(untitled)"
         item.username = self.fields["username"].get().strip()
         item.url = self.fields["url"].get().strip()
@@ -807,35 +890,37 @@ class LockboxApp(tk.Tk):
         item.type = self.type_var.get()
         item.favorite = bool(self.favorite_var.get())
         item.notes = self.notes.get("1.0", tk.END).rstrip("\n")
-
-        secret = self.fields["totp_secret"].get().strip()
-        if secret:
-            try:
-                config = parse_otpauth(secret)  # validates
-                item.totp_secret = secret if secret.lower().startswith("otpauth://") \
-                    else config.secret
-            except ValueError as exc:
-                messagebox.showerror("TOTP", f"Not a usable TOTP secret: {exc}")
-                return
-        else:
-            item.totp_secret = ""
+        item.totp_secret = totp_secret
 
         new_password = self.fields["password"].get()
         if new_password != item.password:
             item.set_password(new_password, int(self.vault.settings["history_limit"]))
 
+        is_new = item is self._pending_new
         try:
-            self.vault.update(item)
+            if is_new:
+                self.vault.add(item)
+            else:
+                self.vault.update(item)
             self.vault.save()
         except OSError as exc:
             messagebox.showerror("Save failed", str(exc))
             return
+        self._pending_new = None
         self.refresh()
-        self.tree.selection_set(item.id)
+        if self.tree.exists(item.id):
+            self.tree.selection_set(item.id)
+            self.tree.see(item.id)
         self.status.set(f"Saved {item.title} at {time.strftime('%H:%M:%S')}")
 
     def delete_item(self) -> None:
         if not (self.vault.unlocked and self.selected):
+            return
+        if self.selected is self._pending_new:  # never written; just drop it
+            self._pending_new = None
+            self.selected = None
+            self._clear_detail()
+            self.status.set("Discarded the unsaved item")
             return
         if not messagebox.askyesno("Delete", f"Delete {self.selected.title!r}?"):
             return
@@ -887,6 +972,7 @@ class LockboxApp(tk.Tk):
                 self.clipboard_helper.clear_if_ours()
             self.vault.lock()
         self.selected = None
+        self._pending_new = None
         self.visible = []
         self._clear_detail()
         self.tree.delete(*self.tree.get_children())
